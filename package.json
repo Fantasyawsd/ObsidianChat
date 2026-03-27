@@ -1,0 +1,26 @@
+{
+  "name": "obsidian-local-agent-chat",
+  "version": "0.1.0",
+  "description": "Local-first AI agent chat plugin for Obsidian with Codex CLI backend.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "agent",
+    "codex"
+  ],
+  "author": "local-agent",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.8.10",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

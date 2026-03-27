@@ -1,0 +1,10 @@
+{
+  "id": "local-agent-chat",
+  "name": "Local Agent Chat",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Chat with local CLI agents (Codex first) directly inside Obsidian.",
+  "author": "local-agent",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}
