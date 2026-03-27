@@ -20,80 +20,65 @@ export class AgentRunner {
 
     const startedAt = Date.now();
     let timedOut = false;
-    let spawnError: Error | null = null;
     let stderr = "";
+    const timeoutHandle =
+      request.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            this.cancel("timeout");
+          }, request.timeoutMs)
+        : null;
 
-    return await new Promise<ExecutionResult>((resolve) => {
-      const child = spawn(command.command, command.args, {
-        cwd: command.cwd,
-        env: {
-          ...process.env,
-          ...(command.env ?? {})
-        },
-        shell: command.shell ?? false,
-        windowsHide: true
-      });
-
-      this.activeRun = {
-        child,
-        cancelled: false
-      };
-
-      const timeoutHandle =
-        request.timeoutMs > 0
-          ? setTimeout(() => {
-              timedOut = true;
-              this.cancel("timeout");
-            }, request.timeoutMs)
-          : null;
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        onStream({
-          type: "stdout",
-          text: chunk.toString("utf8"),
-          at: new Date().toISOString()
-        });
-      });
-
-      child.stderr.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
+    try {
+      let first = await this.runOnce(command, onStream, (text) => {
         stderr += text;
+      });
+
+      // On Windows, direct spawn of *.cmd often fails with ENOENT in Electron apps.
+      // Fallback to cmd.exe shell for the same command so users don't need PowerShell.
+      if (
+        process.platform === "win32" &&
+        !timedOut &&
+        !first.cancelled &&
+        first.error &&
+        isEnoentError(first.error)
+      ) {
         onStream({
           type: "stderr",
-          text,
+          text: "Direct spawn failed on Windows, retrying via cmd.exe...\n",
           at: new Date().toISOString()
         });
-      });
 
-      child.on("error", (err) => {
-        spawnError = err;
-      });
+        first = await this.runOnce(
+          command,
+          onStream,
+          (text) => {
+            stderr += text;
+          },
+          "cmd.exe"
+        );
+      }
 
-      child.on("close", (code, signal) => {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-        }
-
-        const activeRun = this.activeRun;
-        this.activeRun = null;
-
-        resolve({
-          exitCode: code,
-          signal,
-          durationMs: Date.now() - startedAt,
-          cancelled: activeRun?.cancelled ?? false,
-          timedOut,
-          stderr,
-          error: spawnError
-            ? {
-                message: spawnError.message,
-                code: "SPAWN_ERROR",
-                raw: spawnError
-              }
-            : undefined
-        });
-      });
-    });
+      return {
+        exitCode: first.exitCode,
+        signal: first.signal,
+        durationMs: Date.now() - startedAt,
+        cancelled: first.cancelled,
+        timedOut,
+        stderr,
+        error: first.error
+          ? {
+              message: first.error.message,
+              code: isEnoentError(first.error) ? "SPAWN_ENOENT" : "SPAWN_ERROR",
+              raw: first.error
+            }
+          : undefined
+      };
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   cancel(reason: "user" | "timeout" = "user"): boolean {
@@ -126,5 +111,72 @@ export class AgentRunner {
   isRunning(): boolean {
     return this.activeRun !== null;
   }
+
+  private async runOnce(
+    command: CommandSpec,
+    onStream: (event: ProcessStreamEvent) => void,
+    onStderr: (text: string) => void,
+    shellOverride?: string | boolean
+  ): Promise<{
+    exitCode: number | null;
+    signal: NodeJS.Signals | null;
+    cancelled: boolean;
+    error: Error | null;
+  }> {
+    let spawnError: Error | null = null;
+
+    return await new Promise((resolve) => {
+      const child = spawn(command.command, command.args, {
+        cwd: command.cwd,
+        env: {
+          ...process.env,
+          ...(command.env ?? {})
+        },
+        shell: shellOverride ?? command.shell ?? false,
+        windowsHide: true
+      });
+
+      this.activeRun = {
+        child,
+        cancelled: false
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        onStream({
+          type: "stdout",
+          text: chunk.toString("utf8"),
+          at: new Date().toISOString()
+        });
+      });
+
+      child.stderr.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        onStderr(text);
+        onStream({
+          type: "stderr",
+          text,
+          at: new Date().toISOString()
+        });
+      });
+
+      child.on("error", (err) => {
+        spawnError = err;
+      });
+
+      child.on("close", (code, signal) => {
+        const activeRun = this.activeRun;
+        this.activeRun = null;
+        resolve({
+          exitCode: code,
+          signal,
+          cancelled: activeRun?.cancelled ?? false,
+          error: spawnError
+        });
+      });
+    });
+  }
 }
 
+function isEnoentError(error: Error): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}

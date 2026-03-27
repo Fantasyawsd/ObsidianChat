@@ -540,66 +540,48 @@ var AgentRunner = class {
     }
     const startedAt = Date.now();
     let timedOut = false;
-    let spawnError = null;
     let stderr = "";
-    return await new Promise((resolve) => {
-      const child = (0, import_node_child_process.spawn)(command.command, command.args, {
-        cwd: command.cwd,
-        env: {
-          ...process.env,
-          ...command.env ?? {}
-        },
-        shell: command.shell ?? false,
-        windowsHide: true
-      });
-      this.activeRun = {
-        child,
-        cancelled: false
-      };
-      const timeoutHandle = request.timeoutMs > 0 ? setTimeout(() => {
-        timedOut = true;
-        this.cancel("timeout");
-      }, request.timeoutMs) : null;
-      child.stdout.on("data", (chunk) => {
-        onStream({
-          type: "stdout",
-          text: chunk.toString("utf8"),
-          at: (/* @__PURE__ */ new Date()).toISOString()
-        });
-      });
-      child.stderr.on("data", (chunk) => {
-        const text = chunk.toString("utf8");
+    const timeoutHandle = request.timeoutMs > 0 ? setTimeout(() => {
+      timedOut = true;
+      this.cancel("timeout");
+    }, request.timeoutMs) : null;
+    try {
+      let first = await this.runOnce(command, onStream, (text) => {
         stderr += text;
+      });
+      if (process.platform === "win32" && !timedOut && !first.cancelled && first.error && isEnoentError(first.error)) {
         onStream({
           type: "stderr",
-          text,
+          text: "Direct spawn failed on Windows, retrying via cmd.exe...\n",
           at: (/* @__PURE__ */ new Date()).toISOString()
         });
-      });
-      child.on("error", (err) => {
-        spawnError = err;
-      });
-      child.on("close", (code, signal) => {
-        if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
-        }
-        const activeRun = this.activeRun;
-        this.activeRun = null;
-        resolve({
-          exitCode: code,
-          signal,
-          durationMs: Date.now() - startedAt,
-          cancelled: activeRun?.cancelled ?? false,
-          timedOut,
-          stderr,
-          error: spawnError ? {
-            message: spawnError.message,
-            code: "SPAWN_ERROR",
-            raw: spawnError
-          } : void 0
-        });
-      });
-    });
+        first = await this.runOnce(
+          command,
+          onStream,
+          (text) => {
+            stderr += text;
+          },
+          "cmd.exe"
+        );
+      }
+      return {
+        exitCode: first.exitCode,
+        signal: first.signal,
+        durationMs: Date.now() - startedAt,
+        cancelled: first.cancelled,
+        timedOut,
+        stderr,
+        error: first.error ? {
+          message: first.error.message,
+          code: isEnoentError(first.error) ? "SPAWN_ENOENT" : "SPAWN_ERROR",
+          raw: first.error
+        } : void 0
+      };
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
   cancel(reason = "user") {
     if (!this.activeRun) {
@@ -624,7 +606,57 @@ var AgentRunner = class {
   isRunning() {
     return this.activeRun !== null;
   }
+  async runOnce(command, onStream, onStderr, shellOverride) {
+    let spawnError = null;
+    return await new Promise((resolve) => {
+      const child = (0, import_node_child_process.spawn)(command.command, command.args, {
+        cwd: command.cwd,
+        env: {
+          ...process.env,
+          ...command.env ?? {}
+        },
+        shell: shellOverride ?? command.shell ?? false,
+        windowsHide: true
+      });
+      this.activeRun = {
+        child,
+        cancelled: false
+      };
+      child.stdout.on("data", (chunk) => {
+        onStream({
+          type: "stdout",
+          text: chunk.toString("utf8"),
+          at: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      });
+      child.stderr.on("data", (chunk) => {
+        const text = chunk.toString("utf8");
+        onStderr(text);
+        onStream({
+          type: "stderr",
+          text,
+          at: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      });
+      child.on("error", (err) => {
+        spawnError = err;
+      });
+      child.on("close", (code, signal) => {
+        const activeRun = this.activeRun;
+        this.activeRun = null;
+        resolve({
+          exitCode: code,
+          signal,
+          cancelled: activeRun?.cancelled ?? false,
+          error: spawnError
+        });
+      });
+    });
+  }
 };
+function isEnoentError(error) {
+  return error.code === "ENOENT";
+}
 
 // src/ui/confirmModal.ts
 var import_obsidian3 = require("obsidian");
